@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# IDE/Editor specific
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# API Keys and Secrets
+config.js
+config.json
+
+# Build output
+dist/
+build/
+out/
+
+# Voice messages and audio files
+*.mp3
+*.wav
+*.ogg
+*.m4a
+
+# Cache
+.cache/
+.npm/
+
+# Coverage
+coverage/
