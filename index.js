@@ -1,8 +1,6 @@
 require("dotenv").config();
 const { Telegraf } = require("telegraf");
 const axios = require("axios");
-const sqlite3 = require("sqlite3").verbose();
-const { promisify } = require("util");
 const { handleMessage, initChatSession } = require("./model.js");
 const {
   GoogleAIFileManager,
@@ -15,6 +13,19 @@ const { analyzeFood } = require("./agents/food.js");
 const { analyzeExercise } = require("./agents/exercise.js");
 const { evaluateDay, formatEvaluation } = require("./agents/evaluator.js");
 const { analyzeTodo, formatTodo } = require("./agents/todo.js");
+const {
+  initializeDatabase,
+  saveMeal,
+  saveExercise,
+  saveTodo,
+  toggleTodo,
+  deleteTodo,
+  getAllMeals,
+  getAllExercises,
+  getAllTodos,
+  getTodayMeals,
+  getTodayExercises,
+} = require("./db.js");
 
 // Set up Telegram and OpenAI clients
 if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.GEMINI_API_KEY) {
@@ -22,39 +33,7 @@ if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.GEMINI_API_KEY) {
   process.exit(1);
 }
 
-const bot = new Telegraf("7767185269:AAHM5AWsxgOj6BoL7wteQEXXcY-TqX1Xd7Y");
-
-// Set up SQLite database with better error handling
-const db = new sqlite3.Database("./tracker.db", (err) => {
-  if (err) {
-    console.error("Database connection error:", err);
-    process.exit(1);
-  }
-  console.log("Connected to database successfully");
-});
-
-// Promisify database operations
-const dbRun = promisify(db.run.bind(db));
-const dbAll = promisify(db.all.bind(db));
-
-// Create tables for exercises and meals
-async function initializeDatabase() {
-  try {
-    await dbRun(
-      "CREATE TABLE IF NOT EXISTS meals (id INTEGER PRIMARY KEY, date TEXT, meal TEXT, calories INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-    );
-    await dbRun(
-      "CREATE TABLE IF NOT EXISTS exercises (id INTEGER PRIMARY KEY, date TEXT, exercise TEXT, duration INTEGER, calories INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-    );
-    await dbRun(
-      "CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY, task TEXT, completed BOOLEAN DEFAULT 0, due_date TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-    );
-    console.log("Database tables initialized successfully");
-  } catch (error) {
-    console.error("Database initialization error:", error);
-    process.exit(1);
-  }
-}
+const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 // Function to process voice notes with Whisper
 async function transcribeVoice(fileId) {
@@ -233,137 +212,7 @@ async function classifyText(text) {
   }
 }
 
-// Save data to the database with better error handling
-async function saveMeal(date, meal, calories) {
-  try {
-    await dbRun("INSERT INTO meals (date, meal, calories) VALUES (?, ?, ?)", [
-      date,
-      meal,
-      calories || null,
-    ]);
-    console.log("Meal saved successfully:", { date, meal, calories });
-  } catch (error) {
-    console.error("Error saving meal:", error);
-    throw new Error("Failed to save meal to database");
-  }
-}
-
-async function saveExercise(date, exercise, duration, calories) {
-  try {
-    await dbRun(
-      "INSERT INTO exercises (date, exercise, duration, calories) VALUES (?, ?, ?, ?)",
-      [date, exercise, duration || null, calories || null]
-    );
-    console.log("Exercise saved successfully:", {
-      date,
-      exercise,
-      duration,
-      calories,
-    });
-  } catch (error) {
-    console.error("Error saving exercise:", error);
-    throw new Error("Failed to save exercise to database");
-  }
-}
-
-// Save data to the database with better error handling
-async function saveTodo(task, dueDate = null) {
-  try {
-    await dbRun("INSERT INTO todos (task, due_date) VALUES (?, ?)", [
-      task,
-      dueDate,
-    ]);
-    console.log("Todo saved successfully:", { task, dueDate });
-  } catch (error) {
-    console.error("Error saving todo:", error);
-    throw new Error("Failed to save todo to database");
-  }
-}
-
-async function toggleTodo(id) {
-  try {
-    await dbRun("UPDATE todos SET completed = NOT completed WHERE id = ?", [
-      id,
-    ]);
-    console.log("Todo toggled successfully:", { id });
-  } catch (error) {
-    console.error("Error toggling todo:", error);
-    throw new Error("Failed to toggle todo in database");
-  }
-}
-
-async function deleteTodo(id) {
-  try {
-    await dbRun("DELETE FROM todos WHERE id = ?", [id]);
-    console.log("Todo deleted successfully:", { id });
-  } catch (error) {
-    console.error("Error deleting todo:", error);
-    throw new Error("Failed to delete todo from database");
-  }
-}
-
-// Handle voice messages with better error handling
-bot.on("voice", async (ctx) => {
-  try {
-    const voice = ctx.message.voice;
-    await ctx.reply("Procesando tu nota de voz...");
-
-    const result = await transcribeVoice(voice.file_id);
-    console.log(result);
-    if (!result) {
-      throw new Error("Empty transcription result");
-    }
-
-    if (result.context.type === "unknown") {
-      await ctx.reply(
-        "Lo siento, no pude entender el mensaje. Por favor intenta nuevamente."
-      );
-      return;
-    }
-
-    if (result.context.type === "todo") {
-      await ctx.reply(
-        `✅ Tarea agregada:\n*${result.context.task}*${
-          result.context.due_date
-            ? `\nFecha límite: ${result.context.due_date}`
-            : ""
-        }`,
-        { parse_mode: "Markdown" }
-      );
-      return;
-    }
-
-    if (result.context.type === "exercise") {
-      await saveExercise(
-        new Date().toISOString().split("T")[0],
-        result.context.name,
-        parseInt(result.context.duration.replace("minutes", "").trim()),
-        parseInt(result.context.calories)
-      );
-      await ctx.reply(
-        `✅ Registré tu ejercicio:\n*${result.context.name}* - ${result.context.calories} calorías quemadas (${result.context.duration} minutos)`,
-        { parse_mode: "Markdown" }
-      );
-      return;
-    }
-
-    await saveMeal(
-      new Date().toISOString().split("T")[0],
-      result.context.name,
-      parseInt(result.context.calories)
-    );
-    await ctx.reply(
-      `✅ Registré tu comida:\n*${result.context.name}* - ${result.context.calories} calorías`,
-      { parse_mode: "Markdown" }
-    );
-  } catch (error) {
-    console.error("Voice message processing error:", error);
-    await ctx.reply(
-      "Lo siento, hubo un error procesando tu mensaje. Por favor intenta nuevamente."
-    );
-  }
-});
-
+// Handle text messages
 bot.on("message", async (ctx) => {
   try {
     // Handle text messages
@@ -391,7 +240,7 @@ bot.on("message", async (ctx) => {
 
       if (ctx.message.text.toLowerCase() === "/allmymeals") {
         await ctx.reply("📋 Cargando tu historial de comidas...");
-        const meals = await dbAll("SELECT * FROM meals ORDER BY date DESC");
+        const meals = await getAllMeals();
 
         if (meals.length === 0) {
           await ctx.reply("❌ No hay comidas registradas todavía.");
@@ -423,9 +272,7 @@ bot.on("message", async (ctx) => {
 
       if (ctx.message.text.toLowerCase() === "/allexercises") {
         await ctx.reply("📋 Cargando tu historial de ejercicios...");
-        const exercises = await dbAll(
-          "SELECT * FROM exercises ORDER BY date DESC"
-        );
+        const exercises = await getAllExercises();
 
         if (exercises.length === 0) {
           await ctx.reply("❌ No hay ejercicios registrados todavía.");
@@ -471,15 +318,8 @@ bot.on("message", async (ctx) => {
           const today = new Date().toISOString().split("T")[0];
 
           // Get today's meals and exercises
-          const meals = await dbAll(
-            "SELECT * FROM meals WHERE date = ? ORDER BY created_at ASC",
-            [today]
-          );
-
-          const exercises = await dbAll(
-            "SELECT * FROM exercises WHERE date = ? ORDER BY created_at ASC",
-            [today]
-          );
+          const meals = await getTodayMeals(today);
+          const exercises = await getTodayExercises(today);
 
           if (meals.length === 0 && exercises.length === 0) {
             await ctx.reply(
@@ -535,9 +375,7 @@ bot.on("message", async (ctx) => {
 
       if (ctx.message.text.toLowerCase() === "/todos") {
         await ctx.reply("📋 Cargando tu lista de tareas...");
-        const todos = await dbAll(
-          "SELECT * FROM todos ORDER BY due_date ASC, completed ASC, created_at DESC"
-        );
+        const todos = await getAllTodos();
 
         if (todos.length === 0) {
           await ctx.reply("✨ No hay tareas pendientes.");
@@ -583,85 +421,66 @@ bot.on("message", async (ctx) => {
 
         let message = "📝 *LISTA DE TAREAS*\n\n";
 
-        // Format overdue tasks
+        // Add overdue tasks
         if (overdueTasks.length > 0) {
-          message += "⚠️ *Tareas Vencidas:*\n";
+          message += "⚠️ *Tareas Vencidas*\n";
           overdueTasks.forEach((todo) => {
-            const dueDate = new Date(todo.due_date + "T00:00:00-03:00");
-            const formattedDate = dueDate.toLocaleDateString("es-AR", {
-              day: "numeric",
-              month: "long",
-              year: "numeric",
-            });
-            message += `❗️ \`/done_${todo.id}\` ${todo.task} _(vencida: ${formattedDate})_\n`;
+            message += `${todo.id}. ${todo.task} (${new Date(
+              todo.due_date + "T00:00:00-03:00"
+            ).toLocaleDateString("es-AR")})\n`;
           });
           message += "\n";
         }
 
-        // Format tasks by date
-        const dateEntries = Object.entries(tasksByDate).sort(([a], [b]) =>
-          a.localeCompare(b)
-        );
-        if (dateEntries.length > 0) {
-          message += "📅 *Próximas Tareas:*\n";
-          dateEntries.forEach(([date, tasks]) => {
-            const dueDate = new Date(date + "T00:00:00-03:00");
-            const formattedDate = dueDate.toLocaleDateString("es-AR", {
-              weekday: "long",
-              day: "numeric",
-              month: "long",
-              year: "numeric",
-            });
+        // Add today's tasks
+        if (tasksByDate[todayStr] && tasksByDate[todayStr].length > 0) {
+          message += "📅 *Hoy*\n";
+          tasksByDate[todayStr].forEach((todo) => {
+            message += `${todo.id}. ${todo.task}\n`;
+          });
+          message += "\n";
+        }
 
-            if (date === todayStr) {
-              message += `\n🎯 *HOY - ${formattedDate}*\n`;
-            } else {
-              const diffTime = Math.abs(dueDate.getTime() - today.getTime());
-              const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-              const daysText =
-                diffDays === 1 ? "mañana" : `en ${diffDays} días`;
-              message += `\n📌 *${formattedDate}* _(${daysText})_\n`;
+        // Add future tasks by date
+        Object.keys(tasksByDate)
+          .sort()
+          .forEach((date) => {
+            if (date !== todayStr) {
+              const formattedDate = new Date(
+                date + "T00:00:00-03:00"
+              ).toLocaleDateString("es-AR", {
+                weekday: "long",
+                day: "numeric",
+                month: "long",
+              });
+              message += `📅 *${formattedDate}*\n`;
+              tasksByDate[date].forEach((todo) => {
+                message += `${todo.id}. ${todo.task}\n`;
+              });
+              message += "\n";
             }
-
-            tasks.forEach((todo) => {
-              message += `• \`/done_${todo.id}\` ${todo.task}\n`;
-            });
           });
-          message += "\n";
-        }
 
-        // Format tasks without due date
+        // Add tasks without due date
         if (noDateTasks.length > 0) {
-          message += "📌 *Tareas Sin Fecha:*\n";
+          message += "📌 *Sin fecha límite*\n";
           noDateTasks.forEach((todo) => {
-            message += `• \`/done_${todo.id}\` ${todo.task}\n`;
+            message += `${todo.id}. ${todo.task}\n`;
           });
           message += "\n";
         }
 
-        // Format completed tasks
+        // Add completed tasks
         if (completedTasks.length > 0) {
-          message += "✅ *Tareas Completadas:*\n";
-          const recentCompletedTasks = completedTasks.slice(0, 5); // Show only last 5 completed tasks
-          recentCompletedTasks.forEach((todo) => {
-            const completedDate = new Date(todo.created_at);
-            completedDate.setHours(completedDate.getHours() - 3); // Adjust to Argentina timezone
-            const formattedDate = completedDate.toLocaleDateString("es-AR", {
-              day: "numeric",
-              month: "short",
-              year: "numeric",
-            });
-            message += `✓ ${todo.task} _(${formattedDate})_\n`;
+          message += "✅ *Tareas Completadas*\n";
+          completedTasks.forEach((todo) => {
+            message += `${todo.id}. ${todo.task}\n`;
           });
-
-          if (completedTasks.length > 5) {
-            message += `_...y ${completedTasks.length - 5} tareas más..._\n`;
-          }
+          message += "\n";
         }
 
-        message += "\n💡 *Acciones:*\n";
-        message += "• Usa `/addtodo` para agregar una tarea\n";
-        message += "• Usa `/done_X` para completar una tarea\n";
+        message += "*Comandos disponibles:*\n";
+        message += "• Usa `/done_X` para marcar una tarea como completada\n";
         message += "• Usa `/delete_X` para eliminar una tarea";
 
         await ctx.reply(message, { parse_mode: "Markdown" });
@@ -754,65 +573,28 @@ bot.on("message", async (ctx) => {
         // Handle todo reply
         if (promptMessage.includes("¿Qué tarea quieres agregar?")) {
           try {
-            const analyzedTodo = await analyzeTodo(ctx.message.text);
-            await saveTodo(analyzedTodo.task, analyzedTodo.due_date);
+            const todo = await analyzeTodo(ctx.message.text);
+            await saveTodo(todo.task, todo.due_date);
             await ctx.reply(
-              `✅ Tarea agregada:\n*${analyzedTodo.task}*${
-                analyzedTodo.due_date
-                  ? `\nFecha límite: ${analyzedTodo.due_date}`
-                  : ""
+              `✅ Registré tu tarea:\n*${todo.task}*${
+                todo.due_date ? ` (para ${todo.due_date})` : ""
               }`,
               { parse_mode: "Markdown" }
             );
           } catch (error) {
             console.error("Error adding todo:", error);
             await ctx.reply(
-              "❌ Hubo un error al agregar la tarea. Por favor intenta nuevamente."
+              "❌ Hubo un error al registrar la tarea. Por favor intenta nuevamente."
             );
           }
           return;
         }
       }
-
-      // Only show the default help message if it's not a command or a reply
-      if (!ctx.message.text.startsWith("/") && !ctx.message.reply_to_message) {
-        console.log("Received message:", ctx.message.text);
-        await ctx.reply(
-          "👋 ¡Hola! Usa /help para ver todos los comandos disponibles."
-        );
-        return;
-      }
-
-      // Add help command to show available commands
-      if (ctx.message.text.toLowerCase() === "/help") {
-        const helpMessage =
-          `🤖 *Comandos Disponibles*\n\n` +
-          `📝 *Registro de Actividades*\n` +
-          `/addmeal - Registrar una comida\n` +
-          `/addexercise - Registrar un ejercicio\n` +
-          `/addtodo - Agregar una tarea\n\n` +
-          `📊 *Análisis y Reportes*\n` +
-          `/evaluateday - Evaluar el día actual\n` +
-          `/allmymeals - Ver historial de comidas\n` +
-          `/allexercises - Ver historial de ejercicios\n` +
-          `/todos - Ver lista de tareas\n\n` +
-          `📋 *Planes*\n` +
-          `/mealplan - Generar plan de alimentación\n` +
-          `/exerciseplan - Generar plan de ejercicios\n\n` +
-          `💡 *Tips*:\n` +
-          `• Puedes enviar notas de voz describiendo tus comidas, ejercicios o tareas\n` +
-          `• Al agregar una tarea, puedes incluir una fecha límite usando 'para [fecha]'\n` +
-          `• Usa /done_X para marcar una tarea como completada\n` +
-          `• Usa /delete_X para eliminar una tarea`;
-
-        await ctx.reply(helpMessage, { parse_mode: "Markdown" });
-        return;
-      }
     }
   } catch (error) {
-    console.error("Message handling error:", error);
+    console.error("Error handling message:", error);
     await ctx.reply(
-      "Lo siento, hubo un error procesando tu mensaje. Por favor intenta nuevamente."
+      "Lo siento, hubo un error al procesar tu mensaje. Por favor intenta nuevamente."
     );
   }
 });
